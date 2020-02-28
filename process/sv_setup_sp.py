@@ -86,7 +86,7 @@ def create_pdna_net(gdf_nodes, gdf_edges, predistance=500):
 
     net = pdna.Network(gdf_nodes['x'], gdf_nodes['y'], gdf_edges['from'],
                        gdf_edges['to'], gdf_edges[['length']])
-    net.precompute(predistance + 10)
+    net.precompute(predistance + 1)
     return net
 
 
@@ -146,7 +146,7 @@ def convert2binary(gdf, *columnNames):
     for x in columnNames:
         columnName = x[0]
         columnBinary = x[1]
-        gdf[columnBinary] = np.where(gdf[columnName] == -999, 0, 1)
+        gdf[columnBinary] = np.where(np.isnan(gdf[columnName]), 0, 1)
     return gdf
 
 
@@ -271,11 +271,11 @@ def readGraphml(path, config):
         networkx -- projected networkx
     """
     if os.path.isfile(path):
-        print('Start to read network.')
+        print('Read network.')
         return ox.load_graphml(path)
     else:
         # else read original graphml and reproject it
-        print('Start to reproject network')
+        print('Reproject network')
 
         # get the work directory
         dirname = os.path.abspath('')
@@ -302,7 +302,7 @@ def createHexid(sp, hex):
     """
     if "hex_id" not in sp.columns.tolist():
         # get sample point dataframe columns
-        print("Start to create hex_id for sample points")
+        print("Create hex_id for sample points")
         samplePoint_column = sp.columns.tolist()
         samplePoint_column.append('index')
 

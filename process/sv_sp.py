@@ -21,21 +21,23 @@ if __name__ == '__main__':
     # use the script from command line, like "python process/sv_sp.py odense.json"
     startTime = time.time()
 
+    # get study region
+    study_region = sys.argv[1]
+    
     # get the work directory
     dirname = os.path.abspath('')
-
     # the configuration file should put in the "/configuration" folder located at the same folder as scripts
-    jsonFile = "configuration/" + sys.argv[1]
+    jsonFile = f"configuration/{study_region}.json"
     jsonPath = os.path.join(dirname, jsonFile)
     try:
         with open(jsonPath) as json_file:
             config = json.load(json_file)
     except Exception as e:
-        print('Failed to read json file.')
+        print(f'Failed to read json file {jsonFile}.')
         print(e)
 
     # output the processing city name to users
-    print('Start to process city: {}'.format(config["study_region"]))
+    print('Process city: {}'.format(config["study_region"].title()))
 
     # read projected graphml
     graphmlProj_path = os.path.join(dirname, config["folder"],
@@ -49,23 +51,21 @@ if __name__ == '__main__':
     # hexes in memory
     hex250 = gpd.read_file(gpkgPath, layer=config["parameters"]["hex250"])
 
-    # create nodes from G_proj
-    gdf_nodes = ox.graph_to_gdfs(G_proj, nodes=True, edges=False)
-    gdf_nodes.osmid = gdf_nodes.osmid.astype(int)
-    gdf_nodes = gdf_nodes.drop_duplicates(subset='osmid')
-    gdf_nodes_simple = gdf_nodes[['osmid']].copy()
-    del gdf_nodes
-    
     # calculate average poplulation and intersection density, read from csv file if exist
     if os.path.isfile(os.path.join(dirname, config["folder"],
                          config['parameters']['tempCSV'])):
-        print('read poplulation and intersection density from local file.')
+        print('Read poplulation and intersection density from local file.')
         gdf_nodes_simple = pd.read_csv(os.path.join(dirname, config["folder"],
                          config['parameters']['tempCSV']))
-
-            
     else:
-        print('Start to calculate average poplulation and intersection density.')
+        print("Create nodes from G_proj")
+        gdf_nodes = ox.graph_to_gdfs(G_proj, nodes=True, edges=False)
+        gdf_nodes.osmid = gdf_nodes.osmid.astype(int)
+        gdf_nodes = gdf_nodes.drop_duplicates(subset='osmid')
+        gdf_nodes_simple = gdf_nodes[['osmid']].copy()
+        del gdf_nodes
+    
+        print('Calculate average poplulation and intersection density')
 
         # read search distance from json file, which should be 1600m
         distance = config['parameters']['search_distance']
@@ -118,20 +118,16 @@ if __name__ == '__main__':
     print('The time to finish average pop and intersection density is: {}'.
               format(time.time() - startTime))
 
-    # read sample point from geopackage
-    samplePointsData = gpd.read_file(
-        gpkgPath, layer=config["parameters"]["samplePoints"])
-
-    # create 'hex_id' for sample point, if it not exists
-    if "hex_id" not in samplePointsData.columns.tolist():
-        samplePointsData = sss.createHexid(samplePointsData, hex250)
-
     # Calculate accessibility to POI(supermarket,convenience,pt,pso)
-    print('Start to calculate assessbility to POIs.')
+    print('Calculate assessbility to POIs.')
 
+    # read distance from json file, which is 500m
+    distance = config["parameters"]["accessibility_distance"]
+    
     # create the pandana network, just use nodes and edges
     gdf_nodes, gdf_edges = ox.graph_to_gdfs(G_proj)
-    net = sss.create_pdna_net(gdf_nodes, gdf_edges)
+    
+    net = sss.create_pdna_net(gdf_nodes, gdf_edges,predistance=distance)
 
     # read "destinations" layer from geopackage
     gdf_poi1 = gpd.read_file(gpkgPath,
@@ -143,8 +139,6 @@ if __name__ == '__main__':
         config["parameters"]["convenience"], config["parameters"]["PT"]
     ]
 
-    # read distance from json file, which is 500m
-    distance = config["parameters"]["accessibility_distance"]
 
     # read output field names from json file
     output_fieldNames1 = [
@@ -188,82 +182,123 @@ if __name__ == '__main__':
         config["samplePoint_fieldNames"]["sp_nearest_node_pos_binary"]
     ]
     names3 = list(zip(output_fieldNames1, output_fieldNames2))
-    gdf_nodes_poi_dist = sss.convert2binary(gdf_nodes_poi_dist, *names3)
-
     # set index of gdf_nodes_poi_dist to use 'osmid' as index
-    gdf_nodes_poi_dist.set_index('osmid', inplace=True, drop=False)
-
+    gdf_nodes_poi_dist.set_index('osmid', inplace=True, drop=True)
     # drop unuseful columns
     gdf_nodes_poi_dist.drop(
         ['geometry', 'id', 'lat', 'lon', 'y', 'x', 'highway', 'ref'],
         axis=1,
         inplace=True)
+    # replace -999 values as nan
+    gdf_nodes_poi_dist = round(gdf_nodes_poi_dist,0).replace(-999,np.nan).astype('Int64')
+    # create binary indicators of access for each destination
+    # note: the sss.convert2binary function has been modified to use nan, rather than -999 for this
+    ## But also, since the distance from node to destination is only part of story
+    # this is too soon to create the indicator - commented out
+    # gdf_nodes_poi_dist = sss.convert2binary(gdf_nodes_poi_dist, *names3)
+    
+    # read sample point from geopackage
+    samplePointsData = gpd.read_file(
+        gpkgPath, layer=config["parameters"]["samplePoints"])
 
-    # for each sample point, create a new field to save the osmid of the closest point,
-    # which is used for joining to nodes
-    samplePointsData['closest_node_id'] = np.where(
-        samplePointsData.n1_distance <= samplePointsData.n2_distance,
-        samplePointsData.n1, samplePointsData.n2)
+    # create 'hex_id' for sample point, if it not exists
+    if "hex_id" not in samplePointsData.columns.tolist():
+        samplePointsData = sss.createHexid(samplePointsData, hex250)
+    
+    samplePointsData.set_index('point_id',inplace=True)
+    # create long form working dataset of sample points to evaluate respective 
+    # node distances and densities
+    full_nodes = samplePointsData[['n1', 'n2', 'n1_distance', 'n2_distance']].copy()
+    
+    full_nodes['nodes'] = full_nodes.apply(lambda x: [[int(x.n1),x.n1_distance],
+                                                                  [int(x.n2),x.n2_distance]],
+                                                       axis=1)
+    full_nodes = full_nodes[['nodes']].explode('nodes')
+    full_nodes[['node','node_distance_m']] = pd.DataFrame(
+                                     full_nodes.nodes.values.tolist(), 
+                                     index= full_nodes.index)
 
-    # join the two tables based on node id (join on sample points and nodes)
-    samplePointsData['closest_node_id'] = samplePointsData[
-        'closest_node_id'].astype(int)
-
-    # first, join POIs results from nodes to sample points
-    samplePointsData = samplePointsData.join(gdf_nodes_poi_dist,
-                                             on='closest_node_id',
+    # join POIs results from nodes to sample points
+    full_nodes = full_nodes[['node','node_distance_m']].join(gdf_nodes_poi_dist,
+                                             on='node',
+                                             how='left')
+    distance_fields = []
+    for d in output_fieldNames1:
+        new_d = d.replace('sp_nearest_node_','')+'_m'
+        full_nodes[new_d] = full_nodes[d] + full_nodes['node_distance_m']    
+        distance_fields.append(new_d)
+    # Calculate node density statistics
+    density_fields = [pop_density,intersection_density]
+    node_weight_denominator = full_nodes['node_distance_m'].groupby(full_nodes.index).sum()
+    full_nodes = full_nodes[['node','node_distance_m']+
+                                                    distance_fields].join(
+                                             node_weight_denominator,
                                              how='left',
-                                             rsuffix='_nodes1')
+                                             rsuffix='_denominator')
+    full_nodes['density_weight'] = 1-(full_nodes['node_distance_m']/
+                                        full_nodes['node_distance_m_denominator'])
+    # Define a lambda function to compute the weighted mean:
+    wm = lambda x: np.average(x, weights=full_nodes.loc[x.index, "density_weight"])
+    # join up full nodes with density fields
+    full_nodes = full_nodes.join(
+                           gdf_nodes_simple[density_fields],
+                           on='node',
+                           how='left')    
+    # define aggregation functions for per sample point estimates
+    # ie. we take 
+    #       - minimum of full distances
+    #       - and weighted mean of densities
+    # The latter is so that if distance from two nodes for a point are 0m and 30m
+    #  the weight of 0m is 1 and the weight of 30m is 0.
+    #  ie. 1 - (0/(0+30)) = 1    , and 1 - (30/(0+30)) = 0
+    #
+    # This is not perfect; ideally the densities would be calculated for the sample points directly
+    # But it is better than just assigning the value of the nearest node (which may be hundreds of metres away)
+    full_nodes['pop_density'] = full_nodes[pop_density]*full_nodes.density_weight
+    full_nodes['intersection_density'] = full_nodes[intersection_density]*full_nodes.density_weight
+    new_densities = ['pop_density','intersection_density']
+    agg_functions = dict(zip(distance_fields+new_densities,
+                               ['min']*len(distance_fields)+['sum']*len(new_densities)))
+    full_nodes = full_nodes.groupby(
+                              full_nodes.index
+                              ).agg(agg_functions)
+    binary_fields = ['access_'+d.replace('_dist_m','') for d in distance_fields]
+    full_nodes[binary_fields] = (full_nodes[distance_fields] <= distance).astype(int)
+    samplePointsData = samplePointsData[['hex_id', 'edge_ogc_fid','geometry']].join(
+                                  full_nodes,
+                                  how='left')
+    
 
-    # second, join pop and intersection density from nodes to sample points
-    samplePointsData = samplePointsData.join(gdf_nodes_simple,
-                                             on='closest_node_id',
-                                             how='left',
-                                             rsuffix='_nodes2')
+    # DO NOT drop the nan rows samplePointsData, and deep copy to a new variable
+    # samplePointsData_withoutNan = samplePointsData.dropna().copy()
+    # nanData = samplePointsData[~samplePointsData.index.
+                               # isin(samplePointsData_withoutNan.index)]
 
-    # drop the nan rows samplePointsData, and deep copy to a new variable
-    samplePointsData_withoutNan = samplePointsData.dropna().copy()
-    nanData = samplePointsData[~samplePointsData.index.
-                               isin(samplePointsData_withoutNan.index)]
-
-    # save the nan rows to a new layer in geopackage, in case someone will check it
-    nanData.to_file(gpkgPath,
-                    layer=config["parameters"]["dropNan"],
-                    driver='GPKG')
-    del nanData
+    # # save the nan rows to a new layer in geopackage, in case someone will check it
+    # nanData.to_file(gpkgPath,
+                    # layer=config["parameters"]["dropNan"],
+                    # driver='GPKG')
+    # del nanData
 
     # create new field for living score, and exclude public open space
-    output_fieldNames2.pop()
-    samplePointsData_withoutNan[
-        'sp_daily_living_score'] = samplePointsData_withoutNan[
-            output_fieldNames2].sum(axis=1)
-
-    oriFieldNames = [
-        config["samplePoint_fieldNames"]["sp_local_nh_avg_pop_density"],
-        config["samplePoint_fieldNames"]
-        ["sp_local_nh_avg_intersection_density"],
-        config["samplePoint_fieldNames"]["sp_daily_living_score"]
-    ]
-    newFieldNames = [
-        config["samplePoint_fieldNames"]["sp_zscore_local_nh_avgpopdensity"],
-        config["samplePoint_fieldNames"]["sp_zscore_local_nh_avgintdensity"],
-        config["samplePoint_fieldNames"]["sp_zscore_daily_living_score"]
-    ]
+    # daily_living_destinations = ['access_'+a for a in ['supermarket','convenience','pt']]
+    
+    
+    samplePointsData['daily_living'] = samplePointsData[binary_fields[:-1]].sum(axis=1)
 
     # zip the old and new field names together as input, and calculate zscore
+    oriFieldNames = new_densities+['daily_living']
+    newFieldNames = ['z_'+f for f in oriFieldNames]
     fieldNames = list(zip(oriFieldNames, newFieldNames))
-    samplePointsData_withoutNan = sss.cal_zscores(samplePointsData_withoutNan,
-                                                  fieldNames)
+    samplePointsData = sss.cal_zscores(samplePointsData,fieldNames)
 
     # sum these three zscores for walkability
-    samplePointsData_withoutNan[
-        'sp_walkability_index'] = samplePointsData_withoutNan[
-            newFieldNames].sum(axis=1)
+    samplePointsData['sp_walkability_index'] = samplePointsData[newFieldNames].sum(axis=1)
 
     # save the sample points with all the desired results to a new layer in geopackage
-    samplePointsData_withoutNan.to_file(
+    samplePointsData.to_file(
         gpkgPath,
-        layer=config["parameters"]["samplepointResult"],
+        layer=config["parameters"]["samplepointResult"]+'_revised',
         driver='GPKG')
 
     endTime = time.time() - startTime
