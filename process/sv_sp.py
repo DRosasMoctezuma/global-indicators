@@ -295,6 +295,12 @@ if __name__ == '__main__':
     # sum these three zscores for walkability
     samplePointsData['sp_walkability_index'] = samplePointsData[newFieldNames].sum(axis=1)
 
+    int_fields = ['hex_id', 'edge_ogc_fid']
+    float_fields = ['supermarket_dist_m','convenience_dist_m','pt_dist_m','pos_dist_m','pop_density','intersection_density','access_supermarket','access_convenience','access_pt','access_pos','daily_living','z_pop_density','z_intersection_density','z_daily_living','sp_walkability_index']
+
+    samplePointsData[int_fields] = samplePointsData[int_fields].astype(int)
+    samplePointsData[float_fields] = samplePointsData[float_fields].astype(float)
+
     # save the sample points with all the desired results to a new layer in geopackage
     samplePointsData.to_file(
         gpkgPath,
@@ -302,5 +308,4 @@ if __name__ == '__main__':
         driver='GPKG')
 
     endTime = time.time() - startTime
-    print('Total time is : {0:.2f} hours or {1:.2f} seconds'.format(
-        endTime / 3600, endTime))
+    print('Total time is : {:.2f} minutes'.format(endTime/60))
