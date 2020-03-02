@@ -302,7 +302,7 @@ if __name__ == '__main__':
     samplePointsData[float_fields] = samplePointsData[float_fields].astype(float)
 
     # save the sample points with all the desired results to a new layer in geopackage
-    samplePointsData.to_file(
+    samplePointsData.reset_index().to_file(
         gpkgPath,
         layer=config["parameters"]["samplepointResult"]+'_revised',
         driver='GPKG')
